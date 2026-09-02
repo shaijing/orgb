@@ -1,27 +1,31 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use std::time::Duration;
+use std::path::PathBuf;
 
-mod backend;
-mod effects;
-mod lighting;
-
-use backend::ColorfulBackend;
-use effects::{EffectKind, render_frame};
-use lighting::{LightingBackend, Rgb};
+use orgb::core::{Rgb, RgbDevice};
+use orgb::drivers::BoardDriver;
+use orgb::effects::EffectKind;
+use orgb::scheduler;
+use orgb::smbios::read_board_identity;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Control Colorful motherboard RGB lighting")]
 struct Cli {
+    /// Directory containing board profile TOML files.
+    #[arg(long, global = true, default_value = "configs/colorful")]
+    config_dir: PathBuf,
+    /// Board profile name or TOML file stem. Required when multiple profiles are installed.
+    #[arg(long, global = true)]
+    profile: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Print the backend and framebuffer layout.
+    /// Print device capabilities and logical LED zones.
     Info,
-    /// Print the raw transport layout used by the Colorful backend.
+    /// Print the raw transport layout used by the Colorful driver.
     Probe,
     /// Set all LEDs to one color.
     On {
@@ -37,7 +41,7 @@ enum Command {
         #[arg(long)]
         blue: Option<u8>,
     },
-    /// Run an animated effect through the lighting backend.
+    /// Run an animated effect through the scheduler.
     Effect {
         /// Effect name: solid, rainbow, breathing, wave, or cycle.
         #[arg(value_enum)]
@@ -51,7 +55,7 @@ enum Command {
         /// Animation cycles per second.
         #[arg(long, default_value_t = 0.2)]
         speed: f32,
-        /// Requested frame rate. The backend minimum interval is always respected.
+        /// Requested frame rate. Device capabilities are always respected.
         #[arg(long)]
         fps: Option<f64>,
         /// Stop after this many seconds. Without it, run until interrupted.
@@ -60,15 +64,6 @@ enum Command {
     },
     /// Turn all LEDs off.
     Off,
-}
-
-struct EffectOptions {
-    kind: EffectKind,
-    primary: Rgb,
-    secondary: Rgb,
-    speed: f32,
-    fps: Option<f64>,
-    duration: Option<f64>,
 }
 
 fn parse_rgb(value: &str) -> Result<Rgb> {
@@ -133,118 +128,61 @@ fn resolve_on_color(
     parse_rgb("#FF0000")
 }
 
-fn frame_interval<B: LightingBackend>(backend: &B, fps: Option<f64>) -> Result<Duration> {
-    let requested = match fps {
-        Some(fps) => {
-            ensure!(
-                fps.is_finite() && fps > 0.0,
-                "--fps must be a positive number"
-            );
-            let seconds = 1.0 / fps;
-            ensure!(
-                seconds <= Duration::MAX.as_secs_f64(),
-                "--fps is too small to represent a frame interval"
-            );
-            Duration::from_secs_f64(seconds)
-        }
-        None => Duration::from_millis(16),
-    };
+fn print_info(driver: &BoardDriver) -> Result<()> {
+    let profile = driver.profile();
+    let topology = driver.topology()?;
+    let capabilities = &profile.capabilities;
 
-    Ok(requested.max(backend.min_frame_interval()))
-}
-
-async fn run_effect<B: LightingBackend>(backend: &mut B, options: EffectOptions) -> Result<()> {
-    ensure!(
-        options.speed.is_finite() && options.speed >= 0.0,
-        "--speed must be a non-negative number"
-    );
-
-    let interval = frame_interval(backend, options.fps)?;
-    let stop_after = match options.duration {
-        Some(seconds) => {
-            ensure!(
-                seconds.is_finite() && seconds >= 0.0,
-                "--duration must be a non-negative number"
-            );
-            ensure!(
-                seconds <= Duration::MAX.as_secs_f64(),
-                "--duration is too large"
-            );
-            Some(Duration::from_secs_f64(seconds))
-        }
-        None => None,
-    };
-
+    println!("Brand: {:?}", profile.brand);
+    println!("Board: {}", profile.model);
     println!(
-        "Running {:?} effect on {} LEDs at approximately {:.1} FPS",
-        options.kind,
-        backend.led_count(),
-        1.0 / interval.as_secs_f64()
+        "Revision: {}",
+        profile.revision.as_deref().unwrap_or("unknown")
     );
-    if stop_after.is_none() {
-        println!("Press Ctrl+C to stop.");
-    }
-
-    let started = tokio::time::Instant::now();
-    let mut next_frame = started;
-    let mut frames_sent = 0u64;
-
-    loop {
-        let elapsed = started.elapsed();
-        if frames_sent > 0 && stop_after.is_some_and(|limit| elapsed >= limit) {
-            break;
-        }
-
-        let frame = render_frame(
-            options.kind,
-            backend.led_count(),
-            elapsed,
-            options.primary,
-            options.secondary,
-            options.speed,
+    println!(
+        "USB: {:04x}:{:04x}, interface {}",
+        profile.usb_match.vendor_id, profile.usb_match.product_id, profile.usb_match.interface
+    );
+    println!("LED count: {}", topology.led_count());
+    println!("Zones:");
+    for zone in topology.zones() {
+        println!(
+            "  {}: offset={}, capacity={}, active={}",
+            zone.name, zone.offset, zone.capacity, zone.active_led_count
         );
-        backend.send_frame(&frame).await?;
-        frames_sent += 1;
-
-        let now = tokio::time::Instant::now();
-        if next_frame > now {
-            tokio::time::sleep_until(next_frame).await;
-        } else {
-            next_frame = now;
-        }
-        next_frame += interval;
     }
-
-    println!("Effect stopped after {frames_sent} frames.");
-    Ok(())
-}
-
-fn print_info() {
-    println!("Backend: Colorful HID framebuffer");
-    println!("LED count: {}", ColorfulBackend::led_count());
-    println!("Framebuffer: 6 pages x 100 LEDs + 2 LEDs");
-    println!("Pages: 0x00, 0x01, 0x02, 0x03; commit: 0xff");
+    let first_position = topology.leds().first().map(|(_, position)| position);
+    let last_position = topology.leds().last().map(|(_, position)| position);
+    if let (Some(first), Some(last)) = (first_position, last_position) {
+        println!(
+            "Logical position range: ({:.2}, {:.2}, {:.2}) -> ({:.2}, {:.2}, {:.2})",
+            first.x, first.y, first.z, last.x, last.y, last.z
+        );
+    }
+    println!(
+        "Capabilities: direct_rgb={}, per_led={}, max_leds={}, readback={}",
+        capabilities.direct_rgb,
+        capabilities.per_led,
+        capabilities.max_leds,
+        capabilities.supports_readback
+    );
     println!(
         "Minimum frame interval: {} us",
-        ColorfulBackend::frame_interval().as_micros()
+        capabilities.min_update_interval.as_micros()
     );
-}
-
-fn print_probe() {
-    println!("Transport: HID feature report on interface 1");
-    println!("Command: 0x88");
-    println!("Report size: 604 bytes");
-    println!("RGB payload: 600 + 2 LEDs across pages 0x00..0x03");
-    println!("Commit: page 0xff with an empty payload");
+    Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let identity = read_board_identity()?;
+    let driver =
+        BoardDriver::load_for_identity(&cli.config_dir, &identity, cli.profile.as_deref())?;
 
     match cli.command {
-        Command::Info => print_info(),
-        Command::Probe => print_probe(),
+        Command::Info => print_info(&driver)?,
+        Command::Probe => driver.print_probe(),
         Command::On {
             color,
             red,
@@ -252,8 +190,8 @@ async fn main() -> Result<()> {
             blue,
         } => {
             let color = resolve_on_color(color, red, green, blue)?;
-            let mut backend = ColorfulBackend::open().await?;
-            backend.set_color(color).await?;
+            let mut device = driver.open().await?;
+            device.set_color(color).await?;
             println!(
                 "Set RGB to ({}, {}, {}) #{:02X}{:02X}{:02X}",
                 color.red, color.green, color.blue, color.red, color.green, color.blue
@@ -269,10 +207,10 @@ async fn main() -> Result<()> {
         } => {
             let primary = parse_rgb(&color)?;
             let secondary = parse_rgb(&secondary)?;
-            let mut backend = ColorfulBackend::open().await?;
-            run_effect(
-                &mut backend,
-                EffectOptions {
+            let mut device = driver.open().await?;
+            scheduler::run(
+                &mut device,
+                scheduler::EffectConfig {
                     kind,
                     primary,
                     secondary,
@@ -284,8 +222,8 @@ async fn main() -> Result<()> {
             .await?;
         }
         Command::Off => {
-            let mut backend = ColorfulBackend::open().await?;
-            backend.set_color(Rgb::BLACK).await?;
+            let mut device = driver.open().await?;
+            device.set_color(Rgb::BLACK).await?;
             println!("Turned RGB off");
         }
     }

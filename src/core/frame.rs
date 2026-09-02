@@ -1,6 +1,3 @@
-use anyhow::Result;
-use std::time::Duration;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb {
     pub red: u8,
@@ -39,18 +36,8 @@ impl Frame {
     pub fn len(&self) -> usize {
         self.pixels.len()
     }
-}
 
-#[allow(async_fn_in_trait)]
-pub trait LightingBackend {
-    fn led_count(&self) -> usize;
-
-    fn min_frame_interval(&self) -> Duration;
-
-    async fn send_frame(&mut self, frame: &Frame) -> Result<()>;
-
-    async fn set_color(&mut self, color: Rgb) -> Result<()> {
-        let frame = Frame::solid(self.led_count(), color);
-        self.send_frame(&frame).await
+    pub fn is_empty(&self) -> bool {
+        self.pixels.is_empty()
     }
 }

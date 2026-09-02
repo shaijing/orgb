@@ -1,0 +1,61 @@
+vendor = "Colorful"
+model = "BATTLE-AX B860M-PLUS S WIFI7"
+protocol = "colorful-088"
+revision = "V20"
+
+[usb_match]
+vendor_id = 0x2f4c
+product_id = 0x1024
+interface = 1
+
+[capabilities]
+direct_rgb = true
+per_led = true
+max_leds = 602
+min_update_interval_us = 16667
+supports_readback = false
+
+[[zones]]
+name = "5V_1"
+kind = "argb"
+capacity = 100
+
+[[zones]]
+name = "5V_2"
+kind = "argb"
+capacity = 100
+
+[[zones]]
+name = "5V_3"
+kind = "argb"
+capacity = 100
+
+[[zones]]
+name = "5V_4"
+kind = "argb"
+capacity = 100
+
+[[zones]]
+name = "5V_5"
+kind = "argb"
+capacity = 100
+
+[[zones]]
+name = "5V_6"
+kind = "argb"
+capacity = 100
+
+[[zones]]
+name = "12V_1"
+kind = "rgb"
+capacity = 1
+
+[[zones]]
+name = "12V_2"
+kind = "rgb"
+capacity = 1
+
+[smbios]
+vendor = "Colorful Technology And Development Co.,LTD"
+model = "BATTLE-AX B860M-PLUS S WIFI7"
+revision = "V20"

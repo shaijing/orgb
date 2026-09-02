@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use std::time::Duration;
 
-use crate::lighting::{Frame, Rgb};
+use crate::core::{Frame, Rgb, Topology};
 
 const TAU: f32 = std::f32::consts::TAU;
 
@@ -22,7 +22,7 @@ pub enum EffectKind {
 
 pub fn render_frame(
     kind: EffectKind,
-    led_count: usize,
+    topology: &Topology,
     elapsed: Duration,
     primary: Rgb,
     secondary: Rgb,
@@ -30,9 +30,11 @@ pub fn render_frame(
 ) -> Frame {
     let time = elapsed.as_secs_f32();
 
-    let pixels = (0..led_count)
-        .map(|index| {
-            let position = index as f32 / led_count.max(1) as f32;
+    let pixels = topology
+        .leds()
+        .iter()
+        .map(|(_, layout)| {
+            let position = layout.x;
 
             match kind {
                 EffectKind::Solid => primary,
@@ -132,9 +134,29 @@ mod tests {
         blue: 255,
     };
 
+    fn topology(led_count: usize) -> Topology {
+        Topology::new(
+            (0..led_count)
+                .map(|id| {
+                    (
+                        crate::core::LedInfo { id, zone_id: 0 },
+                        crate::core::Position {
+                            x: id as f32 / led_count.max(1) as f32,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                    )
+                })
+                .collect(),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn solid_fills_every_led() {
-        let frame = render_frame(EffectKind::Solid, 3, Duration::ZERO, RED, BLUE, 1.0);
+        let topology = topology(3);
+        let frame = render_frame(EffectKind::Solid, &topology, Duration::ZERO, RED, BLUE, 1.0);
 
         assert_eq!(
             frame,
@@ -151,7 +173,15 @@ mod tests {
 
     #[test]
     fn rainbow_has_different_colors_across_the_array() {
-        let frame = render_frame(EffectKind::Rainbow, 6, Duration::ZERO, RED, BLUE, 1.0);
+        let topology = topology(6);
+        let frame = render_frame(
+            EffectKind::Rainbow,
+            &topology,
+            Duration::ZERO,
+            RED,
+            BLUE,
+            1.0,
+        );
 
         assert_eq!(frame.pixels()[0].red, 255);
         assert_eq!(frame.pixels()[2].green, 255);
@@ -160,7 +190,8 @@ mod tests {
 
     #[test]
     fn wave_uses_both_colors() {
-        let frame = render_frame(EffectKind::Wave, 4, Duration::ZERO, RED, BLUE, 1.0);
+        let topology = topology(4);
+        let frame = render_frame(EffectKind::Wave, &topology, Duration::ZERO, RED, BLUE, 1.0);
 
         assert_eq!(frame.pixels()[0].red, 255);
         assert_eq!(frame.pixels()[0].blue, 0);
@@ -170,10 +201,11 @@ mod tests {
 
     #[test]
     fn cycle_changes_over_time() {
-        let first = render_frame(EffectKind::Cycle, 2, Duration::ZERO, RED, BLUE, 1.0);
+        let topology = topology(2);
+        let first = render_frame(EffectKind::Cycle, &topology, Duration::ZERO, RED, BLUE, 1.0);
         let later = render_frame(
             EffectKind::Cycle,
-            2,
+            &topology,
             Duration::from_millis(250),
             RED,
             BLUE,
