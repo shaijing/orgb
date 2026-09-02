@@ -41,15 +41,16 @@ impl Frame {
     }
 }
 
+#[allow(async_fn_in_trait)]
 pub trait LightingBackend {
     fn led_count(&self) -> usize;
 
     fn min_frame_interval(&self) -> Duration;
 
-    fn send_frame(&mut self, frame: &Frame) -> Result<()>;
+    async fn send_frame(&mut self, frame: &Frame) -> Result<()>;
 
-    fn set_color(&mut self, color: Rgb) -> Result<()> {
+    async fn set_color(&mut self, color: Rgb) -> Result<()> {
         let frame = Frame::solid(self.led_count(), color);
-        self.send_frame(&frame)
+        self.send_frame(&frame).await
     }
 }

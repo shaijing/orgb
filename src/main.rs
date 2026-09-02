@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod backend;
 mod effects;
@@ -153,7 +153,7 @@ fn frame_interval<B: LightingBackend>(backend: &B, fps: Option<f64>) -> Result<D
     Ok(requested.max(backend.min_frame_interval()))
 }
 
-fn run_effect<B: LightingBackend>(backend: &mut B, options: EffectOptions) -> Result<()> {
+async fn run_effect<B: LightingBackend>(backend: &mut B, options: EffectOptions) -> Result<()> {
     ensure!(
         options.speed.is_finite() && options.speed >= 0.0,
         "--speed must be a non-negative number"
@@ -185,7 +185,7 @@ fn run_effect<B: LightingBackend>(backend: &mut B, options: EffectOptions) -> Re
         println!("Press Ctrl+C to stop.");
     }
 
-    let started = Instant::now();
+    let started = tokio::time::Instant::now();
     let mut next_frame = started;
     let mut frames_sent = 0u64;
 
@@ -203,12 +203,12 @@ fn run_effect<B: LightingBackend>(backend: &mut B, options: EffectOptions) -> Re
             options.secondary,
             options.speed,
         );
-        backend.send_frame(&frame)?;
+        backend.send_frame(&frame).await?;
         frames_sent += 1;
 
-        let now = Instant::now();
+        let now = tokio::time::Instant::now();
         if next_frame > now {
-            std::thread::sleep(next_frame.duration_since(now));
+            tokio::time::sleep_until(next_frame).await;
         } else {
             next_frame = now;
         }
@@ -238,7 +238,8 @@ fn print_probe() {
     println!("Commit: page 0xff with an empty payload");
 }
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -251,8 +252,8 @@ fn main() -> Result<()> {
             blue,
         } => {
             let color = resolve_on_color(color, red, green, blue)?;
-            let mut backend = ColorfulBackend::open()?;
-            backend.set_color(color)?;
+            let mut backend = ColorfulBackend::open().await?;
+            backend.set_color(color).await?;
             println!(
                 "Set RGB to ({}, {}, {}) #{:02X}{:02X}{:02X}",
                 color.red, color.green, color.blue, color.red, color.green, color.blue
@@ -268,7 +269,7 @@ fn main() -> Result<()> {
         } => {
             let primary = parse_rgb(&color)?;
             let secondary = parse_rgb(&secondary)?;
-            let mut backend = ColorfulBackend::open()?;
+            let mut backend = ColorfulBackend::open().await?;
             run_effect(
                 &mut backend,
                 EffectOptions {
@@ -279,11 +280,12 @@ fn main() -> Result<()> {
                     fps,
                     duration,
                 },
-            )?;
+            )
+            .await?;
         }
         Command::Off => {
-            let mut backend = ColorfulBackend::open()?;
-            backend.set_color(Rgb::BLACK)?;
+            let mut backend = ColorfulBackend::open().await?;
+            backend.set_color(Rgb::BLACK).await?;
             println!("Turned RGB off");
         }
     }

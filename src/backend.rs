@@ -1,6 +1,9 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use rusb::{DeviceHandle, GlobalContext};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use crate::lighting::{Frame, LightingBackend, Rgb};
 
@@ -22,11 +25,17 @@ const FRAME_PAGES: [(u8, usize, usize); 4] = [
 ];
 
 pub struct ColorfulBackend {
-    device: DeviceHandle<GlobalContext>,
+    device: Arc<Mutex<DeviceHandle<GlobalContext>>>,
 }
 
 impl ColorfulBackend {
-    pub fn open() -> Result<Self> {
+    pub async fn open() -> Result<Self> {
+        tokio::task::spawn_blocking(Self::open_blocking)
+            .await
+            .context("failed to join RGB backend setup task")?
+    }
+
+    fn open_blocking() -> Result<Self> {
         let device = rusb::open_device_with_vid_pid(VID, PID)
             .context("Colorful RGB controller 2f4c:1024 not found")?;
 
@@ -35,7 +44,9 @@ impl ColorfulBackend {
             .claim_interface(RGB_IFACE)
             .with_context(|| format!("failed to claim RGB HID interface {RGB_IFACE}"))?;
 
-        Ok(Self { device })
+        Ok(Self {
+            device: Arc::new(Mutex::new(device)),
+        })
     }
 
     pub fn led_count() -> usize {
@@ -46,7 +57,7 @@ impl ColorfulBackend {
         FRAME_INTERVAL
     }
 
-    fn send_feature(&self, report: &[u8]) -> Result<()> {
+    fn send_feature(device: &DeviceHandle<GlobalContext>, report: &[u8]) -> Result<()> {
         ensure!(
             report.first() == Some(&RGB_REPORT_ID),
             "RGB feature report must start with report id {RGB_REPORT_ID}"
@@ -54,8 +65,7 @@ impl ColorfulBackend {
 
         let request_type = 0x21; // Host -> Device, Class, Interface
         let value = (3u16 << 8) | RGB_REPORT_ID as u16; // HID feature report
-        let written = self
-            .device
+        let written = device
             .write_control(
                 request_type,
                 0x09, // SET_REPORT
@@ -126,23 +136,35 @@ impl LightingBackend for ColorfulBackend {
         FRAME_INTERVAL
     }
 
-    fn send_frame(&mut self, frame: &Frame) -> Result<()> {
+    async fn send_frame(&mut self, frame: &Frame) -> Result<()> {
         ensure!(
             frame.len() == LED_COUNT,
             "Colorful backend requires {LED_COUNT} LEDs, got {}",
             frame.len()
         );
 
+        let mut reports = Vec::with_capacity(FRAME_PAGES.len() + 1);
         for (index, start, end) in FRAME_PAGES {
             let report = Self::make_report(index, &frame.pixels()[start..end])?;
-            self.send_feature(&report)
-                .with_context(|| format!("failed to send RGB page 0x{index:02x}"))?;
+            reports.push((index, report));
         }
 
         let commit = Self::make_report(0xff, &[])?;
-        self.send_feature(&commit)
-            .context("failed to commit RGB framebuffer")?;
-        Ok(())
+        reports.push((0xff, commit));
+
+        let device = Arc::clone(&self.device);
+        tokio::task::spawn_blocking(move || {
+            let device = device
+                .lock()
+                .map_err(|_| anyhow!("RGB backend device lock is poisoned"))?;
+            for (index, report) in reports {
+                Self::send_feature(&device, &report)
+                    .with_context(|| format!("failed to send RGB page 0x{index:02x}"))?;
+            }
+            Ok(())
+        })
+        .await
+        .context("failed to join RGB frame task")?
     }
 }
 
