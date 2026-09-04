@@ -83,11 +83,19 @@ pub fn render_frame_with_options(
                     0.1 + 0.9 * (0.5 + 0.5 * (time * speed * TAU).cos()),
                 ),
                 EffectKind::Wave => {
-                    let phase = (position + time * speed).rem_euclid(1.0);
-                    let blend = 0.5 - 0.5 * (phase * TAU).cos();
-                    blend_colors(primary, secondary, blend)
+                    let spatial = zone_spatial_position(
+                        topology,
+                        info.id,
+                        info.zone_id,
+                        position,
+                        options.reverse,
+                    );
+                    wave_color((time * speed + spatial).rem_euclid(1.0), primary, secondary)
                 }
-                EffectKind::Cycle => hsv_to_rgb((time * speed).rem_euclid(1.0)),
+                EffectKind::Cycle => {
+                    let direction = if options.reverse { -1.0 } else { 1.0 };
+                    hsv_to_rgb((direction * time * speed).rem_euclid(1.0))
+                }
             };
 
             scale_color(color, brightness)
@@ -124,6 +132,34 @@ fn rainbow_color(
         .unwrap_or(phase + direction * fallback_position);
 
     hsv_to_rgb(hue.rem_euclid(1.0))
+}
+
+fn zone_spatial_position(
+    topology: &Topology,
+    led_id: usize,
+    zone_id: usize,
+    fallback_position: f32,
+    reverse: bool,
+) -> f32 {
+    let direction = if reverse { -1.0 } else { 1.0 };
+
+    topology
+        .zones()
+        .get(zone_id)
+        .map(|zone| match zone.kind {
+            crate::core::ZoneKind::Argb => {
+                let local_led = led_id.saturating_sub(zone.offset) as f32;
+                direction * local_led * RAINBOW_SPATIAL_HUE_STEP
+            }
+            crate::core::ZoneKind::Rgb => 0.0,
+        })
+        .unwrap_or(direction * fallback_position)
+}
+
+fn wave_color(phase: f32, primary: Rgb, secondary: Rgb) -> Rgb {
+    let blend = 0.5 - 0.5 * (phase * TAU).cos();
+
+    blend_colors(primary, secondary, blend)
 }
 
 fn blend_colors(first: Rgb, second: Rgb, amount: f32) -> Rgb {
@@ -417,6 +453,84 @@ mod tests {
     }
 
     #[test]
+    fn wave_restarts_at_argb_zones_and_keeps_rgb_zones_in_phase() {
+        let topology = Topology::new(
+            vec![
+                (
+                    crate::core::LedInfo { id: 0, zone_id: 0 },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+                (
+                    crate::core::LedInfo { id: 10, zone_id: 0 },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+                (
+                    crate::core::LedInfo {
+                        id: 100,
+                        zone_id: 1,
+                    },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+                (
+                    crate::core::LedInfo {
+                        id: 101,
+                        zone_id: 2,
+                    },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+            ],
+            vec![
+                crate::core::Zone {
+                    id: 0,
+                    name: "ARGB".to_owned(),
+                    kind: crate::core::ZoneKind::Argb,
+                    offset: 0,
+                    capacity: 100,
+                    active_led_count: 2,
+                },
+                crate::core::Zone {
+                    id: 1,
+                    name: "ARGB2".to_owned(),
+                    kind: crate::core::ZoneKind::Argb,
+                    offset: 100,
+                    capacity: 1,
+                    active_led_count: 1,
+                },
+                crate::core::Zone {
+                    id: 2,
+                    name: "RGB".to_owned(),
+                    kind: crate::core::ZoneKind::Rgb,
+                    offset: 101,
+                    capacity: 1,
+                    active_led_count: 1,
+                },
+            ],
+        )
+        .unwrap();
+        let frame = render_frame(EffectKind::Wave, &topology, Duration::ZERO, RED, BLUE, 1.0);
+
+        assert_eq!(frame.pixels()[0], frame.pixels()[2]);
+        assert_eq!(frame.pixels()[0], frame.pixels()[3]);
+        assert_ne!(frame.pixels()[0], frame.pixels()[1]);
+    }
+
+    #[test]
     fn cycle_changes_over_time() {
         let topology = topology(2);
         let first = render_frame(EffectKind::Cycle, &topology, Duration::ZERO, RED, BLUE, 1.0);
@@ -431,5 +545,36 @@ mod tests {
 
         assert_eq!(first.pixels()[0], first.pixels()[1]);
         assert_ne!(first.pixels()[0], later.pixels()[0]);
+    }
+
+    #[test]
+    fn cycle_reverse_changes_color_wheel_direction() {
+        let topology = topology(1);
+        let forward = render_frame_with_options(
+            EffectKind::Cycle,
+            &topology,
+            Duration::from_millis(250),
+            RED,
+            BLUE,
+            1.0,
+            RenderOptions {
+                brightness: 1.0,
+                reverse: false,
+            },
+        );
+        let reverse = render_frame_with_options(
+            EffectKind::Cycle,
+            &topology,
+            Duration::from_millis(250),
+            RED,
+            BLUE,
+            1.0,
+            RenderOptions {
+                brightness: 1.0,
+                reverse: true,
+            },
+        );
+
+        assert_ne!(forward.pixels()[0], reverse.pixels()[0]);
     }
 }

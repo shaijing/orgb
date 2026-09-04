@@ -1,0 +1,2 @@
+# Colorful motherboard RGB controller.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2f4c", ATTR{idProduct}=="1024", MODE="0660", TAG+="uaccess"

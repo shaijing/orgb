@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, ensure};
-use rusb::{DeviceHandle, GlobalContext};
+use rusb::{DeviceHandle, DeviceList, GlobalContext};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,9 +21,7 @@ impl HidFeatureTransport {
     }
 
     fn open_blocking(vendor_id: u16, product_id: u16, interface: u8) -> Result<Self> {
-        let device = rusb::open_device_with_vid_pid(vendor_id, product_id).with_context(|| {
-            format!("RGB controller {vendor_id:04x}:{product_id:04x} not found")
-        })?;
+        let device = Self::open_device(vendor_id, product_id)?;
 
         let _ = device.set_auto_detach_kernel_driver(true);
         device
@@ -34,6 +32,39 @@ impl HidFeatureTransport {
             device: Arc::new(Mutex::new(device)),
             interface,
         })
+    }
+
+    fn open_device(vendor_id: u16, product_id: u16) -> Result<DeviceHandle<GlobalContext>> {
+        let devices = rusb::devices().context("failed to enumerate USB devices")?;
+        let device = Self::find_device(&devices, vendor_id, product_id)?;
+
+        device.open().with_context(|| {
+            format!(
+                "RGB controller {vendor_id:04x}:{product_id:04x} was found but could not be opened; check USB permissions or run with appropriate privileges"
+            )
+        })
+    }
+
+    fn find_device(
+        devices: &DeviceList<GlobalContext>,
+        vendor_id: u16,
+        product_id: u16,
+    ) -> Result<rusb::Device<GlobalContext>> {
+        for device in devices.iter() {
+            let descriptor = device.device_descriptor().with_context(|| {
+                format!(
+                    "failed to read descriptor for USB device on bus {} address {}",
+                    device.bus_number(),
+                    device.address()
+                )
+            })?;
+
+            if descriptor.vendor_id() == vendor_id && descriptor.product_id() == product_id {
+                return Ok(device);
+            }
+        }
+
+        anyhow::bail!("RGB controller {vendor_id:04x}:{product_id:04x} not found")
     }
 
     fn write_blocking(

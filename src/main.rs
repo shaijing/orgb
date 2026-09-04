@@ -58,7 +58,7 @@ enum Command {
         /// Output brightness, from 0.0 to 1.0.
         #[arg(long, default_value_t = 1.0)]
         brightness: f32,
-        /// Reverse the spatial direction of the rainbow effect.
+        /// Reverse the direction of directional effects.
         #[arg(long)]
         reverse: bool,
         /// Requested frame rate. Device capabilities are always respected.
