@@ -3,8 +3,17 @@ use std::time::Duration;
 
 use crate::core::{Frame, Rgb, Topology};
 
+mod color;
+mod rainbow;
+mod spatial;
+mod wave;
+
+use color::{hsv_to_rgb, scale_color};
+use rainbow::rainbow_color;
+use spatial::zone_spatial_position;
+use wave::wave_color;
+
 const TAU: f32 = std::f32::consts::TAU;
-const RAINBOW_SPATIAL_HUE_STEP: f32 = 18.0 / 360.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EffectKind {
@@ -105,63 +114,6 @@ pub fn render_frame_with_options(
     Frame::from_pixels(pixels)
 }
 
-fn rainbow_color(
-    topology: &Topology,
-    led_id: usize,
-    zone_id: usize,
-    fallback_position: f32,
-    time: f32,
-    speed: f32,
-    reverse: bool,
-) -> Rgb {
-    let direction = if reverse { -1.0 } else { 1.0 };
-    let phase = time * speed;
-
-    let hue = topology
-        .zones()
-        .get(zone_id)
-        .map(|zone| {
-            let local_led = led_id.saturating_sub(zone.offset) as f32;
-            match zone.kind {
-                crate::core::ZoneKind::Argb => {
-                    phase + direction * local_led * RAINBOW_SPATIAL_HUE_STEP
-                }
-                crate::core::ZoneKind::Rgb => phase,
-            }
-        })
-        .unwrap_or(phase + direction * fallback_position);
-
-    hsv_to_rgb(hue.rem_euclid(1.0))
-}
-
-fn zone_spatial_position(
-    topology: &Topology,
-    led_id: usize,
-    zone_id: usize,
-    fallback_position: f32,
-    reverse: bool,
-) -> f32 {
-    let direction = if reverse { -1.0 } else { 1.0 };
-
-    topology
-        .zones()
-        .get(zone_id)
-        .map(|zone| match zone.kind {
-            crate::core::ZoneKind::Argb => {
-                let local_led = led_id.saturating_sub(zone.offset) as f32;
-                direction * local_led * RAINBOW_SPATIAL_HUE_STEP
-            }
-            crate::core::ZoneKind::Rgb => 0.0,
-        })
-        .unwrap_or(direction * fallback_position)
-}
-
-fn wave_color(phase: f32, primary: Rgb, secondary: Rgb) -> Rgb {
-    let blend = 0.5 - 0.5 * (phase * TAU).cos();
-
-    blend_colors(primary, secondary, blend)
-}
-
 fn blend_colors(first: Rgb, second: Rgb, amount: f32) -> Rgb {
     Rgb {
         red: blend_channel(first.red, second.red, amount),
@@ -174,55 +126,6 @@ fn blend_channel(first: u8, second: u8, amount: f32) -> u8 {
     (first as f32 + (second as f32 - first as f32) * amount)
         .round()
         .clamp(0.0, 255.0) as u8
-}
-
-fn scale_color(color: Rgb, amount: f32) -> Rgb {
-    Rgb {
-        red: (color.red as f32 * amount).round().clamp(0.0, 255.0) as u8,
-        green: (color.green as f32 * amount).round().clamp(0.0, 255.0) as u8,
-        blue: (color.blue as f32 * amount).round().clamp(0.0, 255.0) as u8,
-    }
-}
-
-fn hsv_to_rgb(hue: f32) -> Rgb {
-    let scaled = hue.rem_euclid(1.0) * 6.0;
-    let sector = scaled.floor() as u8;
-    let fraction = scaled - sector as f32;
-    let up = (fraction * 255.0).round() as u8;
-    let down = ((1.0 - fraction) * 255.0).round() as u8;
-
-    match sector {
-        0 => Rgb {
-            red: 255,
-            green: up,
-            blue: 0,
-        },
-        1 => Rgb {
-            red: down,
-            green: 255,
-            blue: 0,
-        },
-        2 => Rgb {
-            red: 0,
-            green: 255,
-            blue: up,
-        },
-        3 => Rgb {
-            red: 0,
-            green: down,
-            blue: 255,
-        },
-        4 => Rgb {
-            red: up,
-            green: 0,
-            blue: 255,
-        },
-        _ => Rgb {
-            red: 255,
-            green: 0,
-            blue: down,
-        },
-    }
 }
 
 #[cfg(test)]
