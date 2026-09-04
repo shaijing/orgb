@@ -55,6 +55,7 @@ impl Topology {
             zones.push(Zone {
                 id: zone_id,
                 name: profile.name.clone(),
+                kind: profile.kind,
                 offset,
                 capacity: profile.capacity,
                 active_led_count: profile.active_led_count,

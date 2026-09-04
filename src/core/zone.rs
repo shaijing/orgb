@@ -16,6 +16,7 @@ pub struct ZoneProfile {
 pub struct Zone {
     pub id: usize,
     pub name: String,
+    pub kind: ZoneKind,
     pub offset: usize,
     pub capacity: usize,
     pub active_led_count: usize,

@@ -4,6 +4,7 @@ use std::time::Duration;
 use crate::core::{Frame, Rgb, Topology};
 
 const TAU: f32 = std::f32::consts::TAU;
+const RAINBOW_SPATIAL_HUE_STEP: f32 = 18.0 / 360.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EffectKind {
@@ -20,6 +21,12 @@ pub enum EffectKind {
     Cycle,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RenderOptions {
+    pub brightness: f32,
+    pub reverse: bool,
+}
+
 pub fn render_frame(
     kind: EffectKind,
     topology: &Topology,
@@ -28,17 +35,49 @@ pub fn render_frame(
     secondary: Rgb,
     speed: f32,
 ) -> Frame {
+    render_frame_with_options(
+        kind,
+        topology,
+        elapsed,
+        primary,
+        secondary,
+        speed,
+        RenderOptions {
+            brightness: 1.0,
+            reverse: false,
+        },
+    )
+}
+
+pub fn render_frame_with_options(
+    kind: EffectKind,
+    topology: &Topology,
+    elapsed: Duration,
+    primary: Rgb,
+    secondary: Rgb,
+    speed: f32,
+    options: RenderOptions,
+) -> Frame {
     let time = elapsed.as_secs_f32();
+    let brightness = options.brightness.clamp(0.0, 1.0);
 
     let pixels = topology
         .leds()
         .iter()
-        .map(|(_, layout)| {
+        .map(|(info, layout)| {
             let position = layout.x;
 
-            match kind {
+            let color = match kind {
                 EffectKind::Solid => primary,
-                EffectKind::Rainbow => hsv_to_rgb((position + time * speed).rem_euclid(1.0)),
+                EffectKind::Rainbow => rainbow_color(
+                    topology,
+                    info.id,
+                    info.zone_id,
+                    position,
+                    time,
+                    speed,
+                    options.reverse,
+                ),
                 EffectKind::Breathing => scale_color(
                     primary,
                     0.1 + 0.9 * (0.5 + 0.5 * (time * speed * TAU).cos()),
@@ -49,11 +88,42 @@ pub fn render_frame(
                     blend_colors(primary, secondary, blend)
                 }
                 EffectKind::Cycle => hsv_to_rgb((time * speed).rem_euclid(1.0)),
-            }
+            };
+
+            scale_color(color, brightness)
         })
         .collect();
 
     Frame::from_pixels(pixels)
+}
+
+fn rainbow_color(
+    topology: &Topology,
+    led_id: usize,
+    zone_id: usize,
+    fallback_position: f32,
+    time: f32,
+    speed: f32,
+    reverse: bool,
+) -> Rgb {
+    let direction = if reverse { -1.0 } else { 1.0 };
+    let phase = time * speed;
+
+    let hue = topology
+        .zones()
+        .get(zone_id)
+        .map(|zone| {
+            let local_led = led_id.saturating_sub(zone.offset) as f32;
+            match zone.kind {
+                crate::core::ZoneKind::Argb => {
+                    phase + direction * local_led * RAINBOW_SPATIAL_HUE_STEP
+                }
+                crate::core::ZoneKind::Rgb => phase,
+            }
+        })
+        .unwrap_or(phase + direction * fallback_position);
+
+    hsv_to_rgb(hue.rem_euclid(1.0))
 }
 
 fn blend_colors(first: Rgb, second: Rgb, amount: f32) -> Rgb {
@@ -173,7 +243,29 @@ mod tests {
 
     #[test]
     fn rainbow_has_different_colors_across_the_array() {
-        let topology = topology(6);
+        let topology = Topology::new(
+            (0..20)
+                .map(|id| {
+                    (
+                        crate::core::LedInfo { id, zone_id: 0 },
+                        crate::core::Position {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                    )
+                })
+                .collect(),
+            vec![crate::core::Zone {
+                id: 0,
+                name: "ARGB".to_owned(),
+                kind: crate::core::ZoneKind::Argb,
+                offset: 0,
+                capacity: 20,
+                active_led_count: 20,
+            }],
+        )
+        .unwrap();
         let frame = render_frame(
             EffectKind::Rainbow,
             &topology,
@@ -184,8 +276,133 @@ mod tests {
         );
 
         assert_eq!(frame.pixels()[0].red, 255);
-        assert_eq!(frame.pixels()[2].green, 255);
-        assert_eq!(frame.pixels()[4].blue, 255);
+        assert_eq!(frame.pixels()[7].green, 255);
+        assert_eq!(frame.pixels()[14].blue, 255);
+    }
+
+    #[test]
+    fn rainbow_restarts_at_each_argb_zone_and_keeps_rgb_zones_in_phase() {
+        let topology = Topology::new(
+            vec![
+                (
+                    crate::core::LedInfo { id: 0, zone_id: 0 },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+                (
+                    crate::core::LedInfo { id: 1, zone_id: 0 },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+                (
+                    crate::core::LedInfo { id: 2, zone_id: 1 },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+                (
+                    crate::core::LedInfo { id: 3, zone_id: 2 },
+                    crate::core::Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+            ],
+            vec![
+                crate::core::Zone {
+                    id: 0,
+                    name: "ARGB".to_owned(),
+                    kind: crate::core::ZoneKind::Argb,
+                    offset: 0,
+                    capacity: 2,
+                    active_led_count: 2,
+                },
+                crate::core::Zone {
+                    id: 1,
+                    name: "ARGB2".to_owned(),
+                    kind: crate::core::ZoneKind::Argb,
+                    offset: 2,
+                    capacity: 1,
+                    active_led_count: 1,
+                },
+                crate::core::Zone {
+                    id: 2,
+                    name: "RGB".to_owned(),
+                    kind: crate::core::ZoneKind::Rgb,
+                    offset: 3,
+                    capacity: 1,
+                    active_led_count: 1,
+                },
+            ],
+        )
+        .unwrap();
+        let frame = render_frame(
+            EffectKind::Rainbow,
+            &topology,
+            Duration::ZERO,
+            RED,
+            BLUE,
+            1.0,
+        );
+
+        assert_eq!(frame.pixels()[0], frame.pixels()[2]);
+        assert_eq!(frame.pixels()[0], frame.pixels()[3]);
+        assert_ne!(frame.pixels()[0], frame.pixels()[1]);
+    }
+
+    #[test]
+    fn rainbow_options_apply_brightness_and_reverse_direction() {
+        let topology = topology(2);
+        let forward = render_frame_with_options(
+            EffectKind::Rainbow,
+            &topology,
+            Duration::ZERO,
+            RED,
+            BLUE,
+            1.0,
+            RenderOptions {
+                brightness: 0.5,
+                reverse: false,
+            },
+        );
+        let reverse = render_frame_with_options(
+            EffectKind::Rainbow,
+            &topology,
+            Duration::ZERO,
+            RED,
+            BLUE,
+            1.0,
+            RenderOptions {
+                brightness: 1.0,
+                reverse: true,
+            },
+        );
+
+        assert_eq!(
+            forward.pixels()[0],
+            Rgb {
+                red: 128,
+                green: 0,
+                blue: 0
+            }
+        );
+        assert_eq!(
+            reverse.pixels()[1],
+            Rgb {
+                red: 0,
+                green: 255,
+                blue: 255
+            }
+        );
     }
 
     #[test]

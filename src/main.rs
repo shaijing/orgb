@@ -55,6 +55,12 @@ enum Command {
         /// Animation cycles per second.
         #[arg(long, default_value_t = 0.2)]
         speed: f32,
+        /// Output brightness, from 0.0 to 1.0.
+        #[arg(long, default_value_t = 1.0)]
+        brightness: f32,
+        /// Reverse the spatial direction of the rainbow effect.
+        #[arg(long)]
+        reverse: bool,
         /// Requested frame rate. Device capabilities are always respected.
         #[arg(long)]
         fps: Option<f64>,
@@ -202,6 +208,8 @@ async fn main() -> Result<()> {
             color,
             secondary,
             speed,
+            brightness,
+            reverse,
             fps,
             duration,
         } => {
@@ -215,6 +223,8 @@ async fn main() -> Result<()> {
                     primary,
                     secondary,
                     speed,
+                    brightness,
+                    reverse,
                     fps,
                     duration,
                 },

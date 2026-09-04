@@ -3,13 +3,17 @@ use std::time::Duration;
 
 use crate::core::Rgb;
 use crate::core::RgbDevice;
-use crate::effects::{EffectKind, render_frame};
+use crate::effects::{EffectKind, RenderOptions, render_frame_with_options};
+
+const DEFAULT_FPS: f64 = 20.0;
 
 pub struct EffectConfig {
     pub kind: EffectKind,
     pub primary: Rgb,
     pub secondary: Rgb,
     pub speed: f32,
+    pub brightness: f32,
+    pub reverse: bool,
     pub fps: Option<f64>,
     pub duration: Option<f64>,
 }
@@ -28,7 +32,7 @@ fn frame_interval<D: RgbDevice>(device: &D, fps: Option<f64>) -> Result<Duration
             );
             Duration::from_secs_f64(seconds)
         }
-        None => Duration::from_millis(16),
+        None => Duration::from_secs_f64(1.0 / DEFAULT_FPS),
     };
 
     Ok(requested.max(device.capabilities().min_update_interval))
@@ -38,6 +42,10 @@ pub async fn run<D: RgbDevice>(device: &mut D, config: EffectConfig) -> Result<(
     ensure!(
         config.speed.is_finite() && config.speed >= 0.0,
         "--speed must be a non-negative number"
+    );
+    ensure!(
+        config.brightness.is_finite() && (0.0..=1.0).contains(&config.brightness),
+        "--brightness must be between 0.0 and 1.0"
     );
 
     let interval = frame_interval(device, config.fps)?;
@@ -79,13 +87,17 @@ pub async fn run<D: RgbDevice>(device: &mut D, config: EffectConfig) -> Result<(
             break;
         }
 
-        let frame = render_frame(
+        let frame = render_frame_with_options(
             config.kind,
             device.topology(),
             elapsed,
             config.primary,
             config.secondary,
             config.speed,
+            RenderOptions {
+                brightness: config.brightness,
+                reverse: config.reverse,
+            },
         );
         device.submit(&frame).await?;
         frames_sent += 1;
@@ -205,6 +217,8 @@ mod tests {
                 primary: Rgb::BLACK,
                 secondary: Rgb::BLACK,
                 speed: 0.0,
+                brightness: 1.0,
+                reverse: false,
                 fps: None,
                 duration: Some(0.0),
             },
@@ -213,5 +227,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(device.submitted_frames, 1);
+    }
+
+    #[test]
+    fn default_frame_interval_targets_twenty_fps() {
+        let device = FakeDevice::new();
+
+        let interval = frame_interval(&device, None).unwrap();
+
+        assert_eq!(interval, Duration::from_millis(50));
+    }
+
+    #[test]
+    fn frame_interval_respects_device_minimum() {
+        let mut device = FakeDevice::new();
+        device.capabilities.min_update_interval = Duration::from_millis(100);
+
+        let interval = frame_interval(&device, Some(60.0)).unwrap();
+
+        assert_eq!(interval, Duration::from_millis(100));
     }
 }
